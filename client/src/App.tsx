@@ -1,9 +1,19 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { ConnectionForm, type ConnectionFormValues } from '../components/ConnectionForm';
-import { Room, RoomEvent, ConnectionState } from 'livekit-client';
+import { Room, RoomEvent, ConnectionState, createLocalAudioTrack } from 'livekit-client';
 import { LogsView, type LogEntry, type LogLevel } from '../components/LogsView';
 
 type ExtendedConnectionState = ConnectionState | 'idle';
+
+type WebRtcSummary = {
+    iceState: string | null;
+    dtlsState: string | null;
+    rttMs: number | null;
+    bytesSent: number | null;
+    bytesReceived: number | null;
+    packetsSent: number | null;
+    packetsReceived: number | null;
+};
 
 function App() {
     const [lastConnectionAttempt, setLastConnectionAttempt] =
@@ -16,6 +26,8 @@ function App() {
     const [error, setError] = useState<string | null>(null);
     const [isConnecting, setIsConnecting] = useState(false);
     const [logs, setLogs] = useState<LogEntry[]>([]);
+    const [statsJson, setStatsJson] = useState<string | null>(null); // raw WebRTC stats
+    const [webrtcSummary, setWebrtcSummary] = useState<WebRtcSummary | null>(null); // derived health
 
     const appendLog = useCallback(
         (level: LogLevel, message: string) => {
@@ -97,6 +109,19 @@ function App() {
                 `Connected to LiveKit room "${values.roomName}" as "${values.identity}".`
             );
 
+            // 3) Publish a local audio track so we have a real WebRTC peer connection
+            try {
+                const audioTrack = await createLocalAudioTrack();
+                await newRoom.localParticipant.publishTrack(audioTrack);
+                appendLog('info', 'Published local audio track (microphone).');
+            } catch (pubErr: any) {
+                console.warn('Could not publish local audio track:', pubErr);
+                appendLog(
+                    'warn',
+                    `Could not publish local audio track: ${pubErr?.message ?? String(pubErr)}`
+                );
+            }
+
             setRoom(newRoom);
             setConnectionState(newRoom.state);
             setError(null);
@@ -151,6 +176,104 @@ function App() {
         };
     }, [room, appendLog]);
 
+    // Periodically pull WebRTC stats (SDK API if available, otherwise raw RTCPeerConnection stats)
+    useEffect(() => {
+        if (!room) {
+            setStatsJson(null);
+            setWebrtcSummary(null);
+            return;
+        }
+
+        let cancelled = false;
+
+        const updateStats = async () => {
+            try {
+                const anyRoom = room as any;
+
+                // 1) Preferred: SDK-level stats if available in this version
+                if (typeof anyRoom.getStats === 'function') {
+                    const stats = await anyRoom.getStats();
+                    if (cancelled) return;
+
+                    setStatsJson(JSON.stringify(stats, null, 2));
+                    // We don't know the format here for sure, so we skip summary to avoid wrong parsing.
+                    return;
+                }
+
+                // 2) Fallback: try to find any RTCPeerConnection inside engine
+                const engine = anyRoom.engine;
+                const pcs: RTCPeerConnection[] = [];
+
+                const collectPcs = (obj: any) => {
+                    if (!obj || typeof obj !== 'object') return;
+
+                    // Direct RTCPeerConnection (heuristic: getStats + createDataChannel)
+                    if (
+                        typeof (obj as RTCPeerConnection).getStats === 'function' &&
+                        typeof (obj as RTCPeerConnection).createDataChannel === 'function'
+                    ) {
+                        pcs.push(obj as RTCPeerConnection);
+                        return;
+                    }
+
+                    // Common patterns: obj.pc / obj.peerConnection
+                    if (obj.pc && typeof obj.pc.getStats === 'function') {
+                        pcs.push(obj.pc as RTCPeerConnection);
+                    }
+                    if (obj.peerConnection && typeof obj.peerConnection.getStats === 'function') {
+                        pcs.push(obj.peerConnection as RTCPeerConnection);
+                    }
+
+                    // Recurse into nested objects (shallow-ish to avoid huge graphs)
+                    for (const value of Object.values(obj)) {
+                        if (value && typeof value === 'object') {
+                            collectPcs(value);
+                        }
+                    }
+                };
+
+                collectPcs(engine);
+
+                if (pcs.length === 0) {
+                    if (!cancelled) {
+                        setStatsJson('WebRTC stats not available yet (no RTCPeerConnection found).');
+                        setWebrtcSummary(null);
+                    }
+                    return;
+                }
+
+                const results: any[] = [];
+                let index = 0;
+                for (const pc of pcs) {
+                    const report = await pc.getStats();
+                    const items: any[] = [];
+                    report.forEach((v: any) => items.push(v));
+                    results.push({ peer: `pc-${index}`, stats: items });
+                    index += 1;
+                }
+
+                if (cancelled) return;
+
+                setStatsJson(JSON.stringify(results, null, 2));
+                setWebrtcSummary(computeWebRtcSummary(results));
+            } catch (err: any) {
+                console.error('Failed to get stats from room:', err);
+                if (!cancelled) {
+                    setStatsJson(`Error reading stats: ${err?.message ?? String(err)}`);
+                    setWebrtcSummary(null);
+                }
+            }
+        };
+
+        updateStats();
+        const intervalId = window.setInterval(updateStats, 5000);
+
+        return () => {
+            cancelled = true;
+            window.clearInterval(intervalId);
+        };
+    }, [room]);
+
     // Cleanup room when leaving page / hot reload
     useEffect(() => {
         return () => {
@@ -160,12 +283,29 @@ function App() {
         };
     }, [room]);
 
+    const formatBytes = (value: number | null) => {
+        if (value == null) return '—';
+        if (value < 1024) return `${value} B`;
+        if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+        return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+    };
+
+    const formatPackets = (value: number | null) => {
+        if (value == null) return '—';
+        return value.toString();
+    };
+
+    const formatRtt = (value: number | null) => {
+        if (value == null) return '—';
+        return `${Math.round(value)} ms`;
+    };
+
     return (
         <div style={styles.page}>
             <header style={styles.header}>
                 <h1>LiveKit Troubleshooting Playground</h1>
                 <p style={styles.subtitle}>
-                    Step 6: Event log console for connection and participant events.
+                    Step 7: Event log console and basic WebRTC stats.
                 </p>
             </header>
 
@@ -183,8 +323,8 @@ function App() {
                 <section style={styles.card}>
                     <h2>Debug info</h2>
                     <p style={styles.cardText}>
-                        This panel shows the latest connection attempt, connection state, participant count, and
-                        a rolling event log suitable for debugging issues.
+                        This panel shows the latest connection attempt, connection state, participant count, a
+                        rolling event log, and WebRTC stats useful for deeper debugging.
                     </p>
 
                     <div style={styles.debugRow}>
@@ -204,6 +344,53 @@ function App() {
                         </div>
                     )}
 
+                    {/* WebRTC health summary */}
+                    <h3 style={{ marginTop: '1rem', fontSize: '0.9rem' }}>WebRTC health</h3>
+                    <div style={styles.healthGrid}>
+                        <div>
+                            <div style={styles.healthLabel}>ICE state</div>
+                            <div style={styles.healthValue}>
+                                {webrtcSummary?.iceState ?? '—'}
+                            </div>
+                        </div>
+                        <div>
+                            <div style={styles.healthLabel}>DTLS state</div>
+                            <div style={styles.healthValue}>
+                                {webrtcSummary?.dtlsState ?? '—'}
+                            </div>
+                        </div>
+                        <div>
+                            <div style={styles.healthLabel}>RTT</div>
+                            <div style={styles.healthValue}>
+                                {formatRtt(webrtcSummary?.rttMs ?? null)}
+                            </div>
+                        </div>
+                        <div>
+                            <div style={styles.healthLabel}>Bytes sent</div>
+                            <div style={styles.healthValue}>
+                                {formatBytes(webrtcSummary?.bytesSent ?? null)}
+                            </div>
+                        </div>
+                        <div>
+                            <div style={styles.healthLabel}>Bytes received</div>
+                            <div style={styles.healthValue}>
+                                {formatBytes(webrtcSummary?.bytesReceived ?? null)}
+                            </div>
+                        </div>
+                        <div>
+                            <div style={styles.healthLabel}>Packets sent</div>
+                            <div style={styles.healthValue}>
+                                {formatPackets(webrtcSummary?.packetsSent ?? null)}
+                            </div>
+                        </div>
+                        <div>
+                            <div style={styles.healthLabel}>Packets received</div>
+                            <div style={styles.healthValue}>
+                                {formatPackets(webrtcSummary?.packetsReceived ?? null)}
+                            </div>
+                        </div>
+                    </div>
+
                     <h3 style={{ marginTop: '1rem', fontSize: '0.9rem' }}>Last connection payload</h3>
                     <pre style={styles.pre}>
             {lastConnectionAttempt
@@ -211,11 +398,74 @@ function App() {
                 : 'No connection attempts yet.'}
           </pre>
 
+                    <h3 style={{ marginTop: '1rem', fontSize: '0.9rem' }}>WebRTC stats (auto-refreshing)</h3>
+                    <pre style={styles.pre}>
+            {statsJson ?? 'Stats will appear here after connecting to a room.'}
+          </pre>
+
                     <LogsView logs={logs} onClear={() => setLogs([])} />
                 </section>
             </main>
         </div>
     );
+}
+
+function computeWebRtcSummary(results: any[]): WebRtcSummary | null {
+    // results: [{ peer: 'pc-0', stats: [...] }, ...]
+    if (!Array.isArray(results) || results.length === 0) return null;
+
+    const allStats: any[] = [];
+    for (const entry of results) {
+        if (entry && Array.isArray(entry.stats)) {
+            allStats.push(...entry.stats);
+        }
+    }
+    if (allStats.length === 0) return null;
+
+    const candidatePairs = allStats.filter((s) => s.type === 'candidate-pair');
+    const transports = allStats.filter((s) => s.type === 'transport');
+
+    const selectedPair =
+        candidatePairs.find((s) => s.nominated && s.state === 'succeeded') ||
+        candidatePairs.find((s) => s.state === 'succeeded') ||
+        candidatePairs[0];
+
+    const transport = transports[0];
+
+    const rttMs =
+        selectedPair && typeof selectedPair.currentRoundTripTime === 'number'
+            ? selectedPair.currentRoundTripTime * 1000
+            : null;
+
+    const bytesSent =
+        (transport && typeof transport.bytesSent === 'number' && transport.bytesSent) ??
+        (selectedPair && typeof selectedPair.bytesSent === 'number' && selectedPair.bytesSent) ??
+        null;
+
+    const bytesReceived =
+        (transport && typeof transport.bytesReceived === 'number' && transport.bytesReceived) ??
+        (selectedPair && typeof selectedPair.bytesReceived === 'number' && selectedPair.bytesReceived) ??
+        null;
+
+    const packetsSent =
+        (transport && typeof transport.packetsSent === 'number' && transport.packetsSent) ??
+        (selectedPair && typeof selectedPair.packetsSent === 'number' && selectedPair.packetsSent) ??
+        null;
+
+    const packetsReceived =
+        (transport && typeof transport.packetsReceived === 'number' && transport.packetsReceived) ??
+        (selectedPair && typeof selectedPair.packetsReceived === 'number' && selectedPair.packetsReceived) ??
+        null;
+
+    return {
+        iceState: (transport && transport.iceState) || null,
+        dtlsState: (transport && transport.dtlsState) || null,
+        rttMs,
+        bytesSent,
+        bytesReceived,
+        packetsSent,
+        packetsReceived,
+    };
 }
 
 const styles: { [key: string]: React.CSSProperties } = {
@@ -290,6 +540,24 @@ const styles: { [key: string]: React.CSSProperties } = {
         marginTop: '0.5rem',
         fontSize: '0.85rem',
         color: '#93c5fd',
+    },
+    healthGrid: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+        gap: '0.75rem',
+        marginTop: '0.5rem',
+        marginBottom: '0.5rem',
+        fontSize: '0.8rem',
+    },
+    healthLabel: {
+        color: '#9ca3af',
+        textTransform: 'uppercase',
+        letterSpacing: '0.06em',
+        fontSize: '0.7rem',
+    },
+    healthValue: {
+        marginTop: '0.1rem',
+        fontWeight: 600,
     },
 };
 

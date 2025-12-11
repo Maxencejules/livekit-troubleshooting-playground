@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="800bd54a-d043-42b6-8dc2-8dfebad2ad71" name="Changes" comment="feat: scaffold React + TypeScript client">
-      <change afterPath="$PROJECT_DIR$/client/components/ConnectionForm.tsx" afterDir="false" />
+    <list default="true" id="800bd54a-d043-42b6-8dc2-8dfebad2ad71" name="Changes" comment="feat: add event log console for LiveKit room sessions">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/client/src/App.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/client/src/App.tsx" afterDir="false" />
     </list>
@@ -15,6 +14,7 @@
     <option name="RECENT_TEMPLATES">
       <list>
         <option value="TypeScript JSX File" />
+        <option value="TypeScript File" />
       </list>
     </option>
   </component>
@@ -88,7 +88,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1765427877427</updated>
-      <workItem from="1765427878295" duration="2237000" />
+      <workItem from="1765427878295" duration="11487000" />
     </task>
     <task id="LOCAL-00001" summary="initial commit">
       <option name="closed" value="true" />
@@ -106,7 +106,31 @@
       <option name="project" value="LOCAL" />
       <updated>1765429498406</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="feat: add initial connection form and layout">
+      <option name="closed" value="true" />
+      <created>1765430271894</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1765430271894</updated>
+    </task>
+    <task id="LOCAL-00004" summary="feat: add LiveKit token server (CommonJS)">
+      <option name="closed" value="true" />
+      <created>1765439521501</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1765439521501</updated>
+    </task>
+    <task id="LOCAL-00005" summary="feat: add event log console for LiveKit room sessions">
+      <option name="closed" value="true" />
+      <created>1765444458509</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1765444458509</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -116,6 +140,9 @@
     <MESSAGE value="intial commit" />
     <MESSAGE value="initial commit" />
     <MESSAGE value="feat: scaffold React + TypeScript client" />
-    <option name="LAST_COMMIT_MESSAGE" value="feat: scaffold React + TypeScript client" />
+    <MESSAGE value="feat: add initial connection form and layout" />
+    <MESSAGE value="feat: add LiveKit token server (CommonJS)" />
+    <MESSAGE value="feat: add event log console for LiveKit room sessions" />
+    <option name="LAST_COMMIT_MESSAGE" value="feat: add event log console for LiveKit room sessions" />
   </component>
 </project>
