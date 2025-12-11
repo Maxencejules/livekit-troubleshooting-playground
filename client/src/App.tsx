@@ -196,7 +196,7 @@ function App() {
                     if (cancelled) return;
 
                     setStatsJson(JSON.stringify(stats, null, 2));
-                    // We don't know the format here for sure, so we skip summary to avoid wrong parsing.
+                    // Unknown structure; skip summary to avoid wrong parsing
                     return;
                 }
 
@@ -283,6 +283,35 @@ function App() {
         };
     }, [room]);
 
+    const buildDebugSnapshot = () => {
+        return {
+            generatedAt: new Date().toISOString(),
+            connection: {
+                state: connectionState,
+                lastAttempt: lastConnectionAttempt,
+                participantsCount,
+            },
+            webrtc: webrtcSummary,
+            logs,
+        };
+    };
+
+    const handleCopySnapshot = async () => {
+        try {
+            const snapshot = buildDebugSnapshot();
+            const text = JSON.stringify(snapshot, null, 2);
+            await navigator.clipboard.writeText(text);
+            appendLog('info', 'Copied debug snapshot to clipboard.');
+            alert('Debug snapshot copied to clipboard.');
+        } catch (err: any) {
+            console.error('Failed to copy snapshot:', err);
+            appendLog(
+                'error',
+                `Failed to copy debug snapshot: ${err?.message ?? String(err)}`
+            );
+        }
+    };
+
     const formatBytes = (value: number | null) => {
         if (value == null) return '—';
         if (value < 1024) return `${value} B`;
@@ -321,7 +350,16 @@ function App() {
                 </section>
 
                 <section style={styles.card}>
-                    <h2>Debug info</h2>
+                    <div style={styles.debugHeaderRow}>
+                        <h2 style={{ margin: 0 }}>Debug info</h2>
+                        <button
+                            type="button"
+                            style={styles.snapshotButton}
+                            onClick={handleCopySnapshot}
+                        >
+                            Copy debug snapshot
+                        </button>
+                    </div>
                     <p style={styles.cardText}>
                         This panel shows the latest connection attempt, connection state, participant count, a
                         rolling event log, and WebRTC stats useful for deeper debugging.
@@ -558,6 +596,22 @@ const styles: { [key: string]: React.CSSProperties } = {
     healthValue: {
         marginTop: '0.1rem',
         fontWeight: 600,
+    },
+    debugHeaderRow: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: '0.75rem',
+    },
+    snapshotButton: {
+        padding: '0.35rem 0.75rem',
+        borderRadius: 999,
+        border: '1px solid #4b5563',
+        background: '#020617',
+        color: '#e5e7eb',
+        fontSize: '0.75rem',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
     },
 };
 
