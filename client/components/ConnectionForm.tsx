@@ -1,3 +1,4 @@
+// client/src/components/ConnectionForm.tsx
 import React, { useState, type FormEvent } from 'react';
 
 export interface ConnectionFormValues {
