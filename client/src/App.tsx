@@ -22,622 +22,134 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-
-import React, { useEffect, useState, useCallback } from 'react';
-import { ConnectionForm, type ConnectionFormValues } from '../components/ConnectionForm';
-import { Room, RoomEvent, ConnectionState, createLocalAudioTrack } from 'livekit-client';
-import { LogsView, type LogEntry, type LogLevel } from '../components/LogsView';
-
-type ExtendedConnectionState = ConnectionState | 'idle';
-
-type WebRtcSummary = {
-    iceState: string | null;
-    dtlsState: string | null;
-    rttMs: number | null;
-    bytesSent: number | null;
-    bytesReceived: number | null;
-    packetsSent: number | null;
-    packetsReceived: number | null;
-};
+import { useEffect, useRef, useState } from 'react';
+import { ConnectionForm } from '../components/ConnectionForm';
+import { LogsView } from '../components/LogsView';
+import { fixture, fixtureNames, type FixtureName } from './fixtures';
+import { LiveKitSession, requestToken } from './livekit';
+import { initialView, SessionController, validateSettings, type ConnectionSettings } from './session';
+import { eventMessage, snapshotText, type LogEntry } from './snapshot';
+import { LIMITS } from './diagnostics';
 
 function App() {
-    const [lastConnectionAttempt, setLastConnectionAttempt] =
-        useState<ConnectionFormValues | null>(null);
+  const [view, setView] = useState(initialView);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [formError, setFormError] = useState('');
+  const [feedback, setFeedback] = useState('');
+  const [selectedFixture, setSelectedFixture] = useState<FixtureName | null>(null);
+  const [now, setNow] = useState(Date.now);
+  const controller = useRef<SessionController | null>(null);
 
-    const [room, setRoom] = useState<Room | null>(null);
-    const [connectionState, setConnectionState] =
-        useState<ExtendedConnectionState>('idle');
-    const [participantsCount, setParticipantsCount] = useState<number>(0);
-    const [error, setError] = useState<string | null>(null);
-    const [isConnecting, setIsConnecting] = useState(false);
-    const [logs, setLogs] = useState<LogEntry[]>([]);
-    const [statsJson, setStatsJson] = useState<string | null>(null); // raw WebRTC stats
-    const [webrtcSummary, setWebrtcSummary] = useState<WebRtcSummary | null>(null); // derived health
+  useEffect(() => {
+    const session = new SessionController({
+      createRoom: () => new LiveKitSession(), requestToken, onView: setView,
+      onEvent: code => setLogs(previous => [...previous, { timestamp: new Date().toISOString(), code }].slice(-LIMITS.logs)),
+    });
+    controller.current = session;
+    const clock = setInterval(() => setNow(Date.now()), 1000);
+    return () => { clearInterval(clock); session.dispose(); if (controller.current === session) controller.current = null; };
+  }, []);
 
-    const appendLog = useCallback(
-        (level: LogLevel, message: string) => {
-            setLogs((prev) => {
-                const nextId = prev.length ? prev[prev.length - 1].id + 1 : 1;
-                const entry: LogEntry = {
-                    id: nextId,
-                    timestamp: new Date().toISOString(),
-                    level,
-                    message,
-                };
-                // keep at most 200 entries
-                return [...prev, entry].slice(-200);
-            });
-        },
-        []
-    );
+  const connect = (settings: ConnectionSettings) => {
+    setFeedback('');
+    try {
+      const valid = validateSettings(settings);
+      setFormError(''); setSelectedFixture(null);
+      void controller.current?.connect(valid);
+    } catch (error) { setFormError(error instanceof Error ? error.message : 'Check the connection settings.'); }
+  };
+  const loadFixture = (name: FixtureName) => {
+    setFormError(''); setFeedback(''); setSelectedFixture(name);
+    void controller.current?.fixture(fixture(name, now));
+  };
+  const text = snapshotText({ ...view, logs }, now);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); setFeedback('Redacted snapshot copied.'); }
+    catch { setFeedback('Clipboard unavailable. Use Download snapshot instead.'); }
+  };
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url; link.download = 'livekit-diagnostics.json'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    setFeedback('Redacted snapshot downloaded.');
+  };
+  const busy = ['requesting-token', 'connecting', 'reconnecting'].includes(view.phase) || view.microphone === 'pending';
+  const active = view.mode === 'live' && !['idle', 'disconnected'].includes(view.phase);
+  const age = view.diagnostics ? Math.max(0, (now - Date.parse(view.diagnostics.sampledAt)) / 1000) : null;
+  const stale = view.mode === 'live' && age !== null && age > 12;
 
-    const handleConnect = async (values: ConnectionFormValues) => {
-        setLastConnectionAttempt(values);
-        setError(null);
-        setIsConnecting(true);
+  return (
+    <div className="page">
+      <header>
+        <p className="eyebrow">Developer support lab</p>
+        <h1>LiveKit troubleshooting playground</h1>
+        <p className="subtitle">Inspect observable transport signals. Reproduce edge cases offline. Share a redacted support snapshot.</p>
+      </header>
+      <main className="layout">
+        <section className="card">
+          <h2>Connect a developer room</h2>
+          <p>Tokens come from your local issuer. Microphone capture is off until you opt in.</p>
+          <ConnectionForm onSubmit={connect} busy={busy} />
+          <button className="secondary" disabled={!active} onClick={() => { setSelectedFixture(null); void controller.current?.stop(); }}>Cancel / Disconnect</button>
+          {(formError || view.error) && <p className="notice error" role="alert">{formError || (view.error && eventMessage(view.error))}</p>}
+          <div className="session" aria-live="polite">
+            <div><span>Session</span><strong>{view.mode === 'fixture' ? 'Offline fixture' : view.phase}</strong></div>
+            <div><span>Participants</span><strong>{view.participants ?? 'Unavailable'}</strong></div>
+            <div><span>Microphone</span><strong>{view.microphone}</strong></div>
+          </div>
+        </section>
 
-        appendLog(
-            'info',
-            `Connect requested → url=${values.serverUrl}, room=${values.roomName}, identity=${values.identity}`
-        );
+        <section className="card">
+          <h2>Offline scenarios</h2>
+          <p>Deterministic synthetic stats, including a misleading nominated pair. No token, room connection or microphone is used.</p>
+          <div className="fixture-buttons">
+            {fixtureNames.map(name => <button key={name} className="secondary" aria-pressed={selectedFixture === name} onClick={() => loadFixture(name)}>{name}</button>)}
+          </div>
+          <p className="notice">{selectedFixture ? `Fixture: ${selectedFixture}. These values are simulated.` : 'Choose a scenario to explore diagnostics without credentials.'}</p>
+          <p className="muted">A fixture cancels an active developer session. A new connection clears the fixture.</p>
+        </section>
 
-        try {
-            // If already connected to a room, disconnect first
-            if (room) {
-                appendLog('info', 'Disconnecting from existing room before reconnecting.');
-                await room.disconnect();
-                setRoom(null);
-                setConnectionState(ConnectionState.Disconnected);
-                setParticipantsCount(0);
-            }
+        <section className="card wide">
+          <div className="section-heading"><h2>Transport observations</h2><span className={stale ? 'badge warning' : 'badge'}>{view.mode === 'fixture' ? 'Simulated' : stale ? 'Stale sample' : 'Live mode'}</span></div>
+          <p>Track-scoped reports can share a transport. Counters are cumulative and are never summed across tracks. STUN RTT is not end-to-end media latency.</p>
+          {age !== null && <p className="muted">Last successful sample: {Math.floor(age)} s ago ({view.diagnostics?.sampledAt}). {view.mode === 'live' && 'Polling every 5 s after the previous read completes.'}</p>}
+          {view.statsFailed && <p className="notice warning" role="status">Stats read failed. The previous sample is retained and may be stale.</p>}
+          {view.diagnostics?.truncated && <p className="notice warning">Collection was truncated to the documented safety limits.</p>}
+          {!view.diagnostics?.sources.length && <p className="empty">No track reports available. Connect and publish or subscribe to a media track, or choose an offline fixture.</p>}
+          <div className="observations">
+            {view.diagnostics?.sources.map(source => <article className="track" key={source.label}>
+              <h3>{source.label} · {source.direction} {source.kind}</h3>
+              {!source.transports.length && <p>Transport fields unavailable in this track report.</p>}
+              {source.transports.map(transport => <div key={transport.label}>
+                <p className="muted">{transport.label} · selected pair {transport.selectedPairAvailable ? 'referenced' : 'unavailable'}</p>
+                <dl>
+                  <div><dt>ICE state</dt><dd>{transport.iceState ?? 'Unavailable'}</dd></div>
+                  <div><dt>DTLS state</dt><dd>{transport.dtlsState ?? 'Unavailable'}</dd></div>
+                  <div><dt>STUN RTT</dt><dd>{format(transport.stunRttMs, 'ms')}</dd></div>
+                  <div><dt>Bytes sent / received</dt><dd>{format(transport.bytesSent)} / {format(transport.bytesReceived)}</dd></div>
+                  <div><dt>Send / receive rate</dt><dd>{format(transport.sentBitsPerSecond, 'bit/s')} / {format(transport.receivedBitsPerSecond, 'bit/s')}</dd></div>
+                  <div><dt>Counter scope</dt><dd>{transport.counterSource ?? 'Unavailable'}</dd></div>
+                </dl>
+                {transport.counterReset && <p className="notice warning">Counter reset observed; rates are unavailable for this interval.</p>}
+                {transport.stunRttMs !== null && transport.stunRttMs > 300 && <p className="notice warning">STUN RTT exceeds the 300 ms observation threshold. This alone does not diagnose media quality.</p>}
+                {(transport.iceState === 'failed' || transport.dtlsState === 'failed') && <p className="notice warning">The browser reported a failed transport state. This does not identify its cause.</p>}
+              </div>)}
+            </article>)}
+          </div>
+        </section>
 
-            setConnectionState(ConnectionState.Connecting);
-
-            // 1) Ask our token server for a JWT
-            const resp = await fetch('http://localhost:3001/token', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    roomName: values.roomName,
-                    identity: values.identity,
-                }),
-            });
-
-            if (!resp.ok) {
-                const body = await resp.json().catch(() => ({}));
-                const msg = body.error || `Token server error: ${resp.status}`;
-                appendLog('error', msg);
-                throw new Error(msg);
-            }
-
-            const data = await resp.json();
-            const token = data.token as string;
-
-            appendLog('info', 'Received JWT token from token server.');
-
-            if (!token) {
-                const msg = 'Token server returned invalid token payload';
-                appendLog('error', msg);
-                throw new Error(msg);
-            }
-
-            // 2) Connect to LiveKit using Room instance
-            const newRoom = new Room();
-            await newRoom.connect(values.serverUrl, token, {
-                autoSubscribe: true,
-            });
-
-            appendLog(
-                'info',
-                `Connected to LiveKit room "${values.roomName}" as "${values.identity}".`
-            );
-
-            // 3) Publish a local audio track so we have a real WebRTC peer connection
-            try {
-                const audioTrack = await createLocalAudioTrack();
-                await newRoom.localParticipant.publishTrack(audioTrack);
-                appendLog('info', 'Published local audio track (microphone).');
-            } catch (pubErr: any) {
-                console.warn('Could not publish local audio track:', pubErr);
-                appendLog(
-                    'warn',
-                    `Could not publish local audio track: ${pubErr?.message ?? String(pubErr)}`
-                );
-            }
-
-            setRoom(newRoom);
-            setConnectionState(newRoom.state);
-            setError(null);
-        } catch (err: any) {
-            console.error('Connection error:', err);
-            const msg = err?.message || 'Failed to connect to LiveKit';
-            setError(msg);
-            setConnectionState(ConnectionState.Disconnected);
-            appendLog('error', `Connection error: ${msg}`);
-        } finally {
-            setIsConnecting(false);
-        }
-    };
-
-    // Track room events (connection state, participants)
-    useEffect(() => {
-        if (!room) {
-            return;
-        }
-
-        const handleStateChanged = (state: ConnectionState) => {
-            setConnectionState(state);
-            appendLog('info', `Connection state changed → ${state}`);
-        };
-
-        const recomputeParticipants = () => {
-            setParticipantsCount(room.numParticipants);
-            appendLog('info', `Participant count updated → ${room.numParticipants}`);
-        };
-
-        const handleParticipantConnected = () => {
-            appendLog('info', 'Remote participant connected.');
-            recomputeParticipants();
-        };
-
-        const handleParticipantDisconnected = () => {
-            appendLog('info', 'Remote participant disconnected.');
-            recomputeParticipants();
-        };
-
-        room.on(RoomEvent.ConnectionStateChanged, handleStateChanged);
-        room.on(RoomEvent.ParticipantConnected, handleParticipantConnected);
-        room.on(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected);
-
-        // Initial compute
-        recomputeParticipants();
-
-        return () => {
-            room.off(RoomEvent.ConnectionStateChanged, handleStateChanged);
-            room.off(RoomEvent.ParticipantConnected, handleParticipantConnected);
-            room.off(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected);
-        };
-    }, [room, appendLog]);
-
-    // Periodically pull WebRTC stats (SDK API if available, otherwise raw RTCPeerConnection stats)
-    useEffect(() => {
-        if (!room) {
-            setStatsJson(null);
-            setWebrtcSummary(null);
-            return;
-        }
-
-        let cancelled = false;
-
-        const updateStats = async () => {
-            try {
-                const anyRoom = room as any;
-
-                // 1) Preferred: SDK-level stats if available in this version
-                if (typeof anyRoom.getStats === 'function') {
-                    const stats = await anyRoom.getStats();
-                    if (cancelled) return;
-
-                    setStatsJson(JSON.stringify(stats, null, 2));
-                    // Unknown structure; skip summary to avoid wrong parsing
-                    return;
-                }
-
-                // 2) Fallback: try to find any RTCPeerConnection inside engine
-                const engine = anyRoom.engine;
-                const pcs: RTCPeerConnection[] = [];
-
-                const collectPcs = (obj: any) => {
-                    if (!obj || typeof obj !== 'object') return;
-
-                    // Direct RTCPeerConnection (heuristic: getStats + createDataChannel)
-                    if (
-                        typeof (obj as RTCPeerConnection).getStats === 'function' &&
-                        typeof (obj as RTCPeerConnection).createDataChannel === 'function'
-                    ) {
-                        pcs.push(obj as RTCPeerConnection);
-                        return;
-                    }
-
-                    // Common patterns: obj.pc / obj.peerConnection
-                    if (obj.pc && typeof obj.pc.getStats === 'function') {
-                        pcs.push(obj.pc as RTCPeerConnection);
-                    }
-                    if (obj.peerConnection && typeof obj.peerConnection.getStats === 'function') {
-                        pcs.push(obj.peerConnection as RTCPeerConnection);
-                    }
-
-                    // Recurse into nested objects (shallow-ish to avoid huge graphs)
-                    for (const value of Object.values(obj)) {
-                        if (value && typeof value === 'object') {
-                            collectPcs(value);
-                        }
-                    }
-                };
-
-                collectPcs(engine);
-
-                if (pcs.length === 0) {
-                    if (!cancelled) {
-                        setStatsJson('WebRTC stats not available yet (no RTCPeerConnection found).');
-                        setWebrtcSummary(null);
-                    }
-                    return;
-                }
-
-                const results: any[] = [];
-                let index = 0;
-                for (const pc of pcs) {
-                    const report = await pc.getStats();
-                    const items: any[] = [];
-                    report.forEach((v: any) => items.push(v));
-                    results.push({ peer: `pc-${index}`, stats: items });
-                    index += 1;
-                }
-
-                if (cancelled) return;
-
-                setStatsJson(JSON.stringify(results, null, 2));
-                setWebrtcSummary(computeWebRtcSummary(results));
-            } catch (err: any) {
-                console.error('Failed to get stats from room:', err);
-                if (!cancelled) {
-                    setStatsJson(`Error reading stats: ${err?.message ?? String(err)}`);
-                    setWebrtcSummary(null);
-                }
-            }
-        };
-
-        updateStats();
-        const intervalId = window.setInterval(updateStats, 5000);
-
-        return () => {
-            cancelled = true;
-            window.clearInterval(intervalId);
-        };
-    }, [room]);
-
-    // Cleanup room when leaving page / hot reload
-    useEffect(() => {
-        return () => {
-            if (room) {
-                room.disconnect();
-            }
-        };
-    }, [room]);
-
-    const buildDebugSnapshot = () => {
-        return {
-            generatedAt: new Date().toISOString(),
-            connection: {
-                state: connectionState,
-                lastAttempt: lastConnectionAttempt,
-                participantsCount,
-            },
-            webrtc: webrtcSummary,
-            logs,
-        };
-    };
-
-    const handleCopySnapshot = async () => {
-        try {
-            const snapshot = buildDebugSnapshot();
-            const text = JSON.stringify(snapshot, null, 2);
-            await navigator.clipboard.writeText(text);
-            appendLog('info', 'Copied debug snapshot to clipboard.');
-            alert('Debug snapshot copied to clipboard.');
-        } catch (err: any) {
-            console.error('Failed to copy snapshot:', err);
-            appendLog(
-                'error',
-                `Failed to copy debug snapshot: ${err?.message ?? String(err)}`
-            );
-        }
-    };
-
-    const formatBytes = (value: number | null) => {
-        if (value == null) return '—';
-        if (value < 1024) return `${value} B`;
-        if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-        return `${(value / (1024 * 1024)).toFixed(2)} MB`;
-    };
-
-    const formatPackets = (value: number | null) => {
-        if (value == null) return '—';
-        return value.toString();
-    };
-
-    const formatRtt = (value: number | null) => {
-        if (value == null) return '—';
-        return `${Math.round(value)} ms`;
-    };
-
-    return (
-        <div style={styles.page}>
-            <header style={styles.header}>
-                <h1>LiveKit Troubleshooting Playground</h1>
-                <p style={styles.subtitle}>
-                    Step 7: Event log console and basic WebRTC stats.
-                </p>
-            </header>
-
-            <main style={styles.main}>
-                <section style={styles.card}>
-                    <h2>Connection settings</h2>
-                    <p style={styles.cardText}>
-                        Enter your LiveKit server URL, room name, and identity. The Connect button will request
-                        a token from the local token server and then join the specified room.
-                    </p>
-                    <ConnectionForm onSubmit={handleConnect} />
-                    {isConnecting && <p style={styles.infoText}>Connecting…</p>}
-                </section>
-
-                <section style={styles.card}>
-                    <div style={styles.debugHeaderRow}>
-                        <h2 style={{ margin: 0 }}>Debug info</h2>
-                        <button
-                            type="button"
-                            style={styles.snapshotButton}
-                            onClick={handleCopySnapshot}
-                        >
-                            Copy debug snapshot
-                        </button>
-                    </div>
-                    <p style={styles.cardText}>
-                        This panel shows the latest connection attempt, connection state, participant count, a
-                        rolling event log, and WebRTC stats useful for deeper debugging.
-                    </p>
-
-                    <div style={styles.debugRow}>
-                        <div>
-                            <div style={styles.debugLabel}>Connection state</div>
-                            <div style={styles.debugValue}>{connectionState}</div>
-                        </div>
-                        <div>
-                            <div style={styles.debugLabel}>Participants</div>
-                            <div style={styles.debugValue}>{participantsCount}</div>
-                        </div>
-                    </div>
-
-                    {error && (
-                        <div style={styles.errorBox}>
-                            <strong>Error:</strong> {error}
-                        </div>
-                    )}
-
-                    {/* WebRTC health summary */}
-                    <h3 style={{ marginTop: '1rem', fontSize: '0.9rem' }}>WebRTC health</h3>
-                    <div style={styles.healthGrid}>
-                        <div>
-                            <div style={styles.healthLabel}>ICE state</div>
-                            <div style={styles.healthValue}>
-                                {webrtcSummary?.iceState ?? '—'}
-                            </div>
-                        </div>
-                        <div>
-                            <div style={styles.healthLabel}>DTLS state</div>
-                            <div style={styles.healthValue}>
-                                {webrtcSummary?.dtlsState ?? '—'}
-                            </div>
-                        </div>
-                        <div>
-                            <div style={styles.healthLabel}>RTT</div>
-                            <div style={styles.healthValue}>
-                                {formatRtt(webrtcSummary?.rttMs ?? null)}
-                            </div>
-                        </div>
-                        <div>
-                            <div style={styles.healthLabel}>Bytes sent</div>
-                            <div style={styles.healthValue}>
-                                {formatBytes(webrtcSummary?.bytesSent ?? null)}
-                            </div>
-                        </div>
-                        <div>
-                            <div style={styles.healthLabel}>Bytes received</div>
-                            <div style={styles.healthValue}>
-                                {formatBytes(webrtcSummary?.bytesReceived ?? null)}
-                            </div>
-                        </div>
-                        <div>
-                            <div style={styles.healthLabel}>Packets sent</div>
-                            <div style={styles.healthValue}>
-                                {formatPackets(webrtcSummary?.packetsSent ?? null)}
-                            </div>
-                        </div>
-                        <div>
-                            <div style={styles.healthLabel}>Packets received</div>
-                            <div style={styles.healthValue}>
-                                {formatPackets(webrtcSummary?.packetsReceived ?? null)}
-                            </div>
-                        </div>
-                    </div>
-
-                    <h3 style={{ marginTop: '1rem', fontSize: '0.9rem' }}>Last connection payload</h3>
-                    <pre style={styles.pre}>
-            {lastConnectionAttempt
-                ? JSON.stringify(lastConnectionAttempt, null, 2)
-                : 'No connection attempts yet.'}
-          </pre>
-
-                    <h3 style={{ marginTop: '1rem', fontSize: '0.9rem' }}>WebRTC stats (auto-refreshing)</h3>
-                    <pre style={styles.pre}>
-            {statsJson ?? 'Stats will appear here after connecting to a room.'}
-          </pre>
-
-                    <LogsView logs={logs} onClear={() => setLogs([])} />
-                </section>
-            </main>
-        </div>
-    );
+        <section className="card wide">
+          <div className="section-heading"><h2>Support snapshot</h2><div className="actions"><button className="secondary" onClick={() => void copy()}>Copy snapshot</button><button onClick={download}>Download snapshot</button></div></div>
+          <p>Exports contain only bounded observations and fixed event codes. Room names, identities, endpoints, tokens, addresses, SDP and raw SDK errors are omitted.</p>
+          <p className="feedback" role="status">{feedback}</p>
+          <details><summary>Preview redacted JSON</summary><pre>{text}</pre></details>
+          <LogsView logs={logs} onClear={() => setLogs([])} />
+        </section>
+      </main>
+      <footer>Local troubleshooting prototype · Browser fields vary · No cloud room was used to generate the fixture examples</footer>
+    </div>
+  );
 }
-
-function computeWebRtcSummary(results: any[]): WebRtcSummary | null {
-    // results: [{ peer: 'pc-0', stats: [...] }, ...]
-    if (!Array.isArray(results) || results.length === 0) return null;
-
-    const allStats: any[] = [];
-    for (const entry of results) {
-        if (entry && Array.isArray(entry.stats)) {
-            allStats.push(...entry.stats);
-        }
-    }
-    if (allStats.length === 0) return null;
-
-    const candidatePairs = allStats.filter((s) => s.type === 'candidate-pair');
-    const transports = allStats.filter((s) => s.type === 'transport');
-
-    const selectedPair =
-        candidatePairs.find((s) => s.nominated && s.state === 'succeeded') ||
-        candidatePairs.find((s) => s.state === 'succeeded') ||
-        candidatePairs[0];
-
-    const transport = transports[0];
-
-    const rttMs =
-        selectedPair && typeof selectedPair.currentRoundTripTime === 'number'
-            ? selectedPair.currentRoundTripTime * 1000
-            : null;
-
-    const bytesSent =
-        (transport && typeof transport.bytesSent === 'number' && transport.bytesSent) ??
-        (selectedPair && typeof selectedPair.bytesSent === 'number' && selectedPair.bytesSent) ??
-        null;
-
-    const bytesReceived =
-        (transport && typeof transport.bytesReceived === 'number' && transport.bytesReceived) ??
-        (selectedPair && typeof selectedPair.bytesReceived === 'number' && selectedPair.bytesReceived) ??
-        null;
-
-    const packetsSent =
-        (transport && typeof transport.packetsSent === 'number' && transport.packetsSent) ??
-        (selectedPair && typeof selectedPair.packetsSent === 'number' && selectedPair.packetsSent) ??
-        null;
-
-    const packetsReceived =
-        (transport && typeof transport.packetsReceived === 'number' && transport.packetsReceived) ??
-        (selectedPair && typeof selectedPair.packetsReceived === 'number' && selectedPair.packetsReceived) ??
-        null;
-
-    return {
-        iceState: (transport && transport.iceState) || null,
-        dtlsState: (transport && transport.dtlsState) || null,
-        rttMs,
-        bytesSent,
-        bytesReceived,
-        packetsSent,
-        packetsReceived,
-    };
-}
-
-const styles: { [key: string]: React.CSSProperties } = {
-    page: {
-        minHeight: '100vh',
-        padding: '2rem',
-        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-        background: '#0f172a',
-        color: '#e5e7eb',
-    },
-    header: {
-        maxWidth: 900,
-        margin: '0 auto 2rem auto',
-    },
-    subtitle: {
-        marginTop: '0.5rem',
-        color: '#9ca3af',
-        fontSize: '0.95rem',
-    },
-    main: {
-        display: 'grid',
-        gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr)',
-        gap: '1.5rem',
-        alignItems: 'flex-start',
-    },
-    card: {
-        background: '#020617',
-        borderRadius: 12,
-        padding: '1.5rem',
-        boxShadow: '0 12px 30px rgba(0,0,0,0.45)',
-        border: '1px solid #1f2937',
-    },
-    cardText: {
-        color: '#9ca3af',
-        fontSize: '0.9rem',
-        marginBottom: '1rem',
-    },
-    pre: {
-        marginTop: '0.5rem',
-        padding: '0.75rem',
-        background: '#020617',
-        borderRadius: 8,
-        border: '1px solid #111827',
-        fontSize: '0.8rem',
-        overflowX: 'auto',
-    },
-    debugRow: {
-        display: 'flex',
-        gap: '2rem',
-        marginBottom: '0.75rem',
-    },
-    debugLabel: {
-        fontSize: '0.8rem',
-        color: '#9ca3af',
-        textTransform: 'uppercase',
-        letterSpacing: '0.05em',
-    },
-    debugValue: {
-        marginTop: '0.15rem',
-        fontSize: '1rem',
-        fontWeight: 600,
-    },
-    errorBox: {
-        marginTop: '0.5rem',
-        padding: '0.5rem 0.75rem',
-        borderRadius: 8,
-        border: '1px solid #ef4444',
-        background: 'rgba(239, 68, 68, 0.1)',
-        fontSize: '0.85rem',
-    },
-    infoText: {
-        marginTop: '0.5rem',
-        fontSize: '0.85rem',
-        color: '#93c5fd',
-    },
-    healthGrid: {
-        display: 'grid',
-        gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-        gap: '0.75rem',
-        marginTop: '0.5rem',
-        marginBottom: '0.5rem',
-        fontSize: '0.8rem',
-    },
-    healthLabel: {
-        color: '#9ca3af',
-        textTransform: 'uppercase',
-        letterSpacing: '0.06em',
-        fontSize: '0.7rem',
-    },
-    healthValue: {
-        marginTop: '0.1rem',
-        fontWeight: 600,
-    },
-    debugHeaderRow: {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: '0.75rem',
-    },
-    snapshotButton: {
-        padding: '0.35rem 0.75rem',
-        borderRadius: 999,
-        border: '1px solid #4b5563',
-        background: '#020617',
-        color: '#e5e7eb',
-        fontSize: '0.75rem',
-        cursor: 'pointer',
-        whiteSpace: 'nowrap',
-    },
-};
-
+function format(value: number | null, unit = '') { return value === null ? 'Unavailable' : `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}${unit ? ` ${unit}` : ''}`; }
 export default App;

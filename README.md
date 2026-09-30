@@ -1,268 +1,74 @@
-# LiveKit Troubleshooting Playground
+# LiveKit troubleshooting playground
 
-A production-grade debugging and developer-support tool designed to diagnose issues in LiveKit-based real‑time applications.  
-This project demonstrates the complete workflow expected from a **Developer Support Engineer**: triaging connectivity issues, collecting diagnostics, analyzing WebRTC performance, and communicating findings clearly to developers.
+A local developer-support lab for connecting a LiveKit room, inspecting browser transport observations, and exporting a bounded, redacted snapshot. Four deterministic offline scenarios let you inspect the UI without credentials, cloud rooms or a microphone.
 
-It is engineered to mirror real customer scenarios, making it both a professional troubleshooting suite and a compelling demonstration of your ability to support complex distributed systems.
+This is a troubleshooting prototype. It does not diagnose root causes, measure end-to-end media quality, play subscribed media, or provide production authentication.
 
----
+![Offline synthetic counter-reset scenario](docs/offline-desktop.png)
 
-# ⭐ Why This Project Matters (Recruiter-Focused Summary)
+Synthetic offline counter-reset view. No cloud room or microphone was used.
 
-Hiring managers and recruiters reviewing this repository will immediately see:
+## Run the offline demo
 
-### ✔️ You understand **real-time systems**, not just frontend code
-You implemented token generation, signaling flow, WebRTC stats aggregation, ICE diagnosis, DTLS inspection, and traffic analysis.
+Use Node.js 24 and npm. From the repository root:
 
-### ✔️ You think like a **Developer Support Engineer**
-Your tool collects logs, summarizes connection flows, and creates shareable debug snapshots — the exact artifacts support engineers rely on internally.
-
-### ✔️ You built a tool that directly improves developer experience
-This is not a toy app; it solves real problems developers face when integrating LiveKit.
-
-### ✔️ You demonstrate empathy for developer workflows
-The UI surfaces actionable clarity from complex diagnostics — a key skill for support engineering roles.
-
-### ✔️ You show strong communication skills
-The structure of logs, summaries, and snapshot output proves your ability to translate technical signals into human-readable insights.
-
----
-
-# 🎯 Project Overview
-
-The **LiveKit Troubleshooting Playground** is a web-based suite that allows developers (or support engineers) to:
-
-- Validate LiveKit connectivity
-- Identify ICE / DTLS issues
-- Inspect WebRTC candidate pairs
-- Measure RTT and packet flow
-- View connection-state events in real time
-- Collect structured logs
-- Generate a full debug snapshot for support tickets
-
-This mirrors the internal tools used by real Developer Success teams.
-
----
-
-# 🚀 Features
-
-## 🔑 1. Token Generation Workflow
-A Node.js/Express backend signs JWT tokens using your LiveKit API credentials.
-
-This simulates exactly how customer backend auth works.
-
-## 🎛 2. Connection Console
-A React interface lets you connect to LiveKit using:
-- server URL
-- room name
-- identity
-
-It displays:
-- current connection state
-- participant count
-- room lifecycle events
-
-## 🛰 3. Real-Time WebRTC Stats Engine
-The app collects PeerConnection stats every second:
-- ICE candidate pair evaluation
-- DTLS status
-- RTT (round-trip time)
-- bytes/packets sent and received
-- data-channel status
-
-This is the most critical part of diagnosing real-time issues.
-
-## ❤️ 4. WebRTC Health Summary
-Your app creates a human-friendly interpretation of the raw stats, such as:
-
-- Healthy
-- High RTT
-- Low throughput
-- ICE unstable
-- No active candidate pair
-
-This is how Developer Support Engineers translate metrics into clear explanations.
-
-## 📜 5. Rolling Event Log (200-entry buffer)
-Logs include:
-- connection attempts
-- server responses
-- warnings
-- errors
-- participant events
-
-This is invaluable during triage.
-
-## 📦 6. One-Click “Debug Snapshot”
-A complete diagnostic bundle including:
-- connection metadata
-- WebRTC summary
-- full stats dump
-- logs
-- timestamps
-
-This output looks identical to what customers paste into internal LiveKit Jira tickets.
-
----
-
-# 🛠 Architecture
-
-```
-client (React)
-   ↓ POST /token
-token server (Node.js)
-   ↓ JWT
-livekit cloud
-   ↓ WebRTC
-client diagnostics engine → logs → health summary → snapshot exporter
+```sh
+npm ci
+npm --prefix client ci
+npm --prefix server ci
+npm --prefix server start
 ```
 
----
+In another terminal:
 
-# 📂 Tech Stack
-
-- **React + TypeScript**
-- **Vite** (fast dev server)
-- **LiveKit Client SDK**
-- **Node.js + Express**
-- **dotenv** for credentials
-- **WebRTC getStats API**
-
----
-
-# ⚙️ Installation & Usage
-
-## 1️⃣ Token Server Setup
-
-```bash
-cd server
-npm install
+```sh
+npm --prefix client run dev
 ```
 
-Create `.env`:
+Open **http://127.0.0.1:5173**. Choose **Selected pair**, **High RTT**, **Missing fields** or **Counter reset**. Fixture mode is explicitly marked as simulated; it never requests a token, connects a room or accesses the microphone. Selecting a fixture cancels an active developer session.
 
-```
-LIVEKIT_API_KEY=your_api_key_here
-LIVEKIT_API_SECRET=your_api_secret_here
-PORT=3001
-```
+The token server starts without credentials. A connection attempt then returns a clear “not configured” error. The client uses Vite's relative `/api` proxy, so use the documented URL. The production build can display fixtures independently; `vite preview` is a static preview and does not supply the token proxy.
 
-Run server:
+## Optional developer-room connection
 
-```bash
-npm start
-```
+Copy `server/.env.example` to `server/.env`, enter credentials for **your own** developer LiveKit server, and restart the token process. Secrets stay in that process. Enter its `wss://` endpoint, a room and identity. Plain `ws://` is permitted only on loopback; endpoint credentials, queries and fragments are rejected.
 
-Expected output:
+The unauthenticated token issuer binds to **127.0.0.1** and accepts the configured browser origin. Origin checks are not authentication; do not expose this issuer as a production service. Tokens expire after five minutes, are scoped to the requested room, permit subscription, and disable data publishing. Media publishing is permitted only when **Publish microphone** is checked. The UI asks for microphone permission after connecting. Cancel, disconnect and unmount stop owned tracks, including capture that resolves after cancellation.
 
-```
-LiveKit token server running on http://localhost:3001
-```
+Room listeners are installed before connecting. Pending token requests are abortable and time out after 10 seconds. Generation checks discard stale connections, events and stats. Stats reads are scheduled five seconds **after** the previous read completes, preventing overlapping polls. A failed read retains the previous successful sample; samples older than 12 seconds are visibly stale.
 
----
+## What the observations mean
 
-## 2️⃣ Client Setup
+The client calls the public track `getRTCStatsReport()` APIs for published local and subscribed remote tracks. It does not traverse private `Room.engine` internals. Track reports may expose the same shared transport; the UI keeps them separate and never sums their counters. A connection without published/subscribed media may have no accessible track stats. See the [LiveKit local-track API](https://docs.livekit.io/reference/client-sdk-js/classes/LocalVideoTrack.html) and [remote-track API](https://docs.livekit.io/reference/client-sdk-js/classes/RemoteTrack.html).
 
-```bash
-cd client
-npm install
-npm run dev
-```
+| Field | Interpretation |
+| --- | --- |
+| Selected pair | Resolved only from the transport's `selectedCandidatePairId` in the same report. A nominated or succeeded pair is not assumed to be selected. |
+| STUN RTT | `currentRoundTripTime` converted from seconds to milliseconds. This is the latest STUN connectivity/consent RTT, not media latency. |
+| ICE / DTLS | Browser-reported states when exposed. “Failed” identifies a reported state, not its cause. |
+| Bytes | Cumulative transport counters, or the referenced pair's counters if transport counters are absent. Scopes are not mixed. Zero is a real value. |
+| Rates | Counter differences × 8 divided by elapsed stats timestamps. The first sample, missing/repeated timestamps, changed pair scope and counter resets have unavailable rates. |
 
-Vite will give you:
+Browser fields are optional; absent, non-finite and invalid values are shown as **Unavailable**. The 300 ms RTT notice is an observation threshold, not a quality verdict. Zero traffic alone is not a failure. RTP packet loss, jitter, data-channel health and playback are not measured by this UI. Field semantics follow the [W3C WebRTC stats specification](https://www.w3.org/TR/webrtc-stats/).
 
-```
-http://localhost:5173
-```
+## Sharing a snapshot
 
-Open in browser.
+Copy and download produce the same versioned JSON schema, shown in the preview. The allowlist includes aliased track/transport labels, observations, sample time, session state and fixed event codes. It omits room names, participant identities, endpoint URLs, JWTs, IP addresses, SDP, certificates, raw reports and raw SDK errors. SDK logging is silenced; token-server logs contain fixed codes, never token prefixes.
 
----
+Limits are **8 track reports**, **256 rows per report**, **8 transports per report**, **200 log entries** and **64 KiB UTF-8 per export**. Truncation is visible. Older logs are dropped if needed to meet the export bound. Timing, counts and topology still describe your session; inspect the preview before sharing.
 
-# 📊 Example Debug Snapshot
+## Validation
 
-Below is a real snapshot generated by the tool:
-
-```json
-{
-  "generatedAt": "2025-12-11T10:37:01.536Z",
-  "connection": {
-    "state": "connected",
-    "lastAttempt": {
-      "serverUrl": "wss://max-troubleshoot-hj7nbf7t.livekit.cloud",
-      "roomName": "support-room",
-      "identity": "maxence-dev"
-    },
-    "participantsCount": 1
-  },
-  "webrtc": {
-    "iceState": "connected",
-    "dtlsState": "connected",
-    "rttMs": 59,
-    "bytesSent": 1444,
-    "bytesReceived": 692,
-    "packetsSent": 4,
-    "packetsReceived": 2
-  },
-  "logs": [
-    {
-      "id": 1,
-      "timestamp": "2025-12-11T10:36:57.065Z",
-      "level": "info",
-      "message": "Connect requested → url=wss://max-troubleshoot-hj7nbf7t.livekit.cloud, room=support-room, identity=maxence-dev"
-    },
-    {
-      "id": 2,
-      "timestamp": "2025-12-11T10:36:57.072Z",
-      "level": "info",
-      "message": "Received JWT token from token server."
-    },
-    {
-      "id": 3,
-      "timestamp": "2025-12-11T10:36:57.565Z",
-      "level": "info",
-      "message": "Connected to LiveKit room "support-room" as "maxence-dev"."
-    },
-    {
-      "id": 4,
-      "timestamp": "2025-12-11T10:36:57.573Z",
-      "level": "warn",
-      "message": "Could not publish local audio track: Requested device not found"
-    },
-    {
-      "id": 5,
-      "timestamp": "2025-12-11T10:36:57.580Z",
-      "level": "info",
-      "message": "Participant count updated → 1"
-    }
-  ]
-}
+```sh
+npm test
+npm run lint
+npm run build
+npm --prefix client audit --audit-level=low
+npm --prefix server audit --audit-level=low
 ```
 
-This is exactly the type of information support engineers use to debug issues quickly.
+The suite covers selected-pair ambiguity, zero/missing values, finite counters, reset-aware rates, report scoping, bounded redaction, token/connect/microphone cancellation, non-overlapping polling, malformed token payloads, and real loopback HTTP token issuance with locally signed fake-key JWT verification. No LiveKit server or cloud credentials are used.
 
----
+Local evidence: Node 24.12.0 on Windows, 55 client tests and 17 server tests, strict TypeScript/Vite 8 build, and ESLint 10/server syntax checks. Clean installs and full client/server audits reported zero known dependency advisories in the recorded local run; CI explicitly checks the audits. CI is configured for Ubuntu and Windows with Node 24; remote results are recorded on the pull request. Real browser fixture/export checks are described in [the offline check record](docs/offline-checks.md). Live cloud behavior and cross-browser field availability have not been verified.
 
-# 🎯 Why This Project Makes You a Strong Candidate
-
-This repository shows:
-
-### ✔️ You can reproduce, isolate, and diagnose issues
-A key responsibility in Developer Support roles.
-
-### ✔️ You understand LiveKit deeply
-Most applicants don’t know signaling, tokens, ICE, DTLS, or WebRTC stats.
-
-### ✔️ You can communicate clearly
-Your logs, metrics, and summaries are readable and actionable.
-
-### ✔️ You build tools that empower other developers
-Support engineering is about unblocking customers effectively — your tool does this.
-
-### ✔️ You handle real-world failure cases
-Missing devices, timeouts, candidate failures, token issues, invalid URLs — all reproducible here.
-
----
-
-# 📄 License
-MIT
+MIT license. Copyright (c) 2025 Maxence Jules.
