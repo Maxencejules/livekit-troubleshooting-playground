@@ -24,6 +24,8 @@ jobs:
       - run: npm ci
       - run: npm --prefix client ci
       - run: npm --prefix server ci
+      - run: npm --prefix client audit --audit-level=low
+      - run: npm --prefix server audit --audit-level=low
       - run: npm test
       - run: npm run lint
       - run: npm run build

@@ -63,10 +63,12 @@ Limits are **8 track reports**, **256 rows per report**, **8 transports per repo
 npm test
 npm run lint
 npm run build
+npm --prefix client audit --audit-level=low
+npm --prefix server audit --audit-level=low
 ```
 
 The suite covers selected-pair ambiguity, zero/missing values, finite counters, reset-aware rates, report scoping, bounded redaction, token/connect/microphone cancellation, non-overlapping polling, malformed token payloads, and real loopback HTTP token issuance with locally signed fake-key JWT verification. No LiveKit server or cloud credentials are used.
 
-Local evidence: Node 24.12.0 on Windows, 55 client tests and 17 server tests, strict TypeScript/Vite build, and ESLint/server syntax checks. CI is configured for Ubuntu and Windows with Node 24; remote results are recorded on the pull request. Real browser fixture/export checks are described in [the offline check record](docs/offline-checks.md). Live cloud behavior and cross-browser field availability have not been verified.
+Local evidence: Node 24.12.0 on Windows, 55 client tests and 17 server tests, strict TypeScript/Vite 8 build, and ESLint 10/server syntax checks. Clean installs and full client/server audits reported zero known dependency advisories in the recorded local run; CI explicitly checks the audits. CI is configured for Ubuntu and Windows with Node 24; remote results are recorded on the pull request. Real browser fixture/export checks are described in [the offline check record](docs/offline-checks.md). Live cloud behavior and cross-browser field availability have not been verified.
 
 MIT license. Copyright (c) 2025 Maxence Jules.

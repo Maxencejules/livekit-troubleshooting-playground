@@ -22,3 +22,15 @@ The desktop preview is committed as [offline-desktop.png](offline-desktop.png). 
 Automated proof: 55 client cases and 17 Node HTTP/JWT cases, strict TypeScript/Vite build, ESLint and server syntax checks. Vite emits a bundle-size notice for the approximately 610 kB minified JavaScript bundle (169 kB gzip), which includes the LiveKit SDK. This is a performance limitation, not a failed build.
 
 No real LiveKit server, cloud room, microphone device, Firefox or Safari was exercised. Public API typing, mock SDK adapter tests, deterministic stats fixtures and loopback HTTP tests establish the bounded local behavior; they do not establish interoperability with every browser or deployment.
+
+## Dependency refresh
+
+The 2026-09-30 UTC rerun used stable Vite 8.3.1 with `@vitejs/plugin-react` 6.1.1 and ESLint 10.11.0. The old `rolldown-vite` alias and override were removed following the [official Vite migration guide](https://vite.dev/guide/migration.html); ESLint 9 had reached end of life under the [official support policy](https://eslint.org/version-support/). The React and LiveKit runtime versions and application sources are unchanged.
+
+Compatible lockfile updates include the server's body-parser 2.3.0, qs 6.16.0 and path-to-regexp 8.4.2. These address the [body-parser limit advisory](https://github.com/expressjs/body-parser/security/advisories/GHSA-v422-hmwv-36x6) and [path-to-regexp optional-group advisory](https://github.com/pillarjs/path-to-regexp/security/advisories/GHSA-j3q9-mxjg-w52f), along with the qs advisories reported by npm. Express remains 5.2.1.
+
+Fresh `npm ci` at the root, client and server succeeded. All 55 client and 17 server tests, lint and the strict production build passed again. Full `npm audit --json` runs, including development dependencies, reported **0 low, 0 moderate, 0 high and 0 critical findings** for both client and server. This records the advisory registry at the time of the run; it is not a claim that dependencies can never have vulnerabilities. CI now fails on any reported advisory using `--audit-level=low`.
+
+The Vite 8 bundle is 609.58 kB minified JavaScript / 168.92 kB gzip and retains the bundle-size notice. Fresh Chromium checks repeated all four fixtures, the missing-credentials proxy 503, clipboard/export redaction and desktop/narrow layout. Copied JSON was 2,464 bytes; downloaded JSON was 2,385 bytes; both parsed as schema 1 in fixture mode with the entered room, identity and endpoint markers absent. At 390 px, document scroll width remained 390 px. The built, minified production bundle also loaded through `vite preview` and showed the selected-pair scenario correctly, without a new console error. The only tested error remains the deliberate local 503.
+
+Fresh desktop/narrow screenshots agree with the committed synthetic preview, so its bytes are unchanged. No cloud room or microphone device was used. The named browser and owned local server/dev/preview processes were stopped after verification.
